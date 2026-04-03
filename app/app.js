@@ -35,12 +35,15 @@
     formSubmitButton: document.getElementById("form-submit-button"),
     formResetButton: document.getElementById("form-reset-button"),
     formMessage: document.getElementById("form-message"),
+    formModeNote: document.getElementById("form-mode-note"),
     importForm: document.getElementById("import-form"),
     importFile: document.getElementById("import-file"),
     importMessage: document.getElementById("import-message"),
+    importModeNote: document.getElementById("import-mode-note"),
     newEntryButton: document.getElementById("new-entry-button"),
     editSelectedButton: document.getElementById("edit-selected-button"),
-    detailEditButton: document.getElementById("detail-edit-button")
+    detailEditButton: document.getElementById("detail-edit-button"),
+    detailActionNote: document.getElementById("detail-action-note")
   };
 
   const viewConfig = {
@@ -164,6 +167,34 @@
 
     elements.detailEditButton.addEventListener("click", function () {
       startEditSelected();
+    });
+
+    elements.materialViewLink.addEventListener("click", function (event) {
+      if (!state.selectedStandortId) {
+        event.preventDefault();
+        return;
+      }
+
+      if (state.sourceMode === "local") {
+        return;
+      }
+
+      event.preventDefault();
+      openMaterialView();
+    });
+
+    elements.exportLink.addEventListener("click", function (event) {
+      if (!state.selectedStandortId) {
+        event.preventDefault();
+        return;
+      }
+
+      if (state.sourceMode === "local") {
+        return;
+      }
+
+      event.preventDefault();
+      exportMaterialCsv();
     });
 
     elements.formResetButton.addEventListener("click", function () {
@@ -511,6 +542,7 @@
     const material = getSelectedMaterial();
     const erp = getSelectedErp();
     const isLocal = state.sourceMode === "local";
+    const hasMaterial = material.length > 0;
 
     elements.detailEditButton.disabled = !standort || !isLocal;
     if (standort && isLocal) {
@@ -521,13 +553,29 @@
       elements.exportLink.setAttribute("download", "material-" + standort.standort_id + ".csv");
       elements.exportLink.setAttribute("aria-disabled", "false");
       elements.exportLink.classList.remove("is-disabled");
+      setMessage(elements.detailActionNote, "Bearbeiten ist lokal schreibbar. Materialansicht und Export laufen direkt ueber die SQLite-API.", "success");
+    } else if (standort && hasMaterial) {
+      elements.materialViewLink.href = "#";
+      elements.materialViewLink.setAttribute("aria-disabled", "false");
+      elements.materialViewLink.classList.remove("is-disabled");
+      elements.exportLink.href = "#";
+      elements.exportLink.removeAttribute("download");
+      elements.exportLink.setAttribute("aria-disabled", "false");
+      elements.exportLink.classList.remove("is-disabled");
+      setMessage(elements.detailActionNote, "Live-Webmodus ist read-only. Materialansicht und CSV-Export werden hier direkt im Browser erzeugt.", "success");
     } else {
       elements.materialViewLink.href = "#";
       elements.materialViewLink.setAttribute("aria-disabled", "true");
       elements.materialViewLink.classList.add("is-disabled");
       elements.exportLink.href = "#";
+      elements.exportLink.removeAttribute("download");
       elements.exportLink.setAttribute("aria-disabled", "true");
       elements.exportLink.classList.add("is-disabled");
+      setMessage(
+        elements.detailActionNote,
+        standort ? "Fuer diesen Standort liegen keine Materialpositionen vor." : "Waehle zuerst einen Standort aus.",
+        ""
+      );
     }
 
     if (!standort) {
@@ -670,6 +718,8 @@
     });
 
     if (writable) {
+      setMessage(elements.formModeNote, "Lokaler Schreibmodus aktiv. Neue Eintraege, Bearbeiten und Import schreiben in SQLite.", "success");
+      setMessage(elements.importModeNote, "CSV-Dateien werden direkt in die lokale SQLite-Demo importiert.", "success");
       if (state.formMode === "edit") {
         elements.formTitle.textContent = "Eintrag bearbeiten";
         elements.formSubtitle.textContent =
@@ -689,6 +739,8 @@
         "Schreibfunktionen sind nur verfuegbar, wenn die App lokal gegen die SQLite-API laeuft.";
       elements.formSubmitButton.textContent = "Nur lokal moeglich";
       elements.form.elements.standort_id.readOnly = false;
+      setMessage(elements.formModeNote, "Diese veroeffentlichte Web-App ist read-only. Fuer Erfassen oder Bearbeiten die App lokal mit `python3 local/server.py` starten.", "error");
+      setMessage(elements.importModeNote, "Import ist in der Live-Webansicht deaktiviert und nur im lokalen SQLite-Modus verfuegbar.", "error");
     }
 
     elements.editSelectedButton.disabled = !writable || !hasSelection;
@@ -804,6 +856,60 @@
     }
     populateForm(state.selectedStandortId);
     setMessage(elements.formMessage, "Standort in die Bearbeitungsmaske geladen.", "success");
+  }
+
+  function openMaterialView() {
+    const standort = getSelectedStandort();
+    const rollout = getSelectedRollout();
+    const material = getSelectedMaterial().sort(compareMaterialType);
+    const erp = getSelectedErp();
+
+    if (!standort || !material.length) {
+      setMessage(elements.detailActionNote, "Keine Materialansicht verfuegbar.", "error");
+      return;
+    }
+
+    const popup = window.open("", "_blank", "noopener,noreferrer");
+    if (!popup) {
+      setMessage(elements.detailActionNote, "Popup konnte nicht geoeffnet werden. Bitte Popups fuer diese Seite erlauben.", "error");
+      return;
+    }
+
+    const title = "ERP Material " + standort.standort_id;
+    popup.document.write(buildMaterialViewDocument(title, standort, rollout, material, erp));
+    popup.document.close();
+  }
+
+  function exportMaterialCsv() {
+    const standort = getSelectedStandort();
+    const material = getSelectedMaterial().sort(compareMaterialType);
+    const erp = getSelectedErp();
+
+    if (!standort || !material.length) {
+      setMessage(elements.detailActionNote, "Kein Material zum Exportieren vorhanden.", "error");
+      return;
+    }
+
+    const rows = [
+      ["standort_id", "filiale_name", "pso_nummer", "auftragsnummer", "artikel_typ", "artikel_code", "menge", "bestellstatus", "hinweis"]
+    ].concat(
+      material.map(function (item) {
+        return [
+          standort.standort_id,
+          standort.filiale_name || "",
+          item.pso_nummer || (erp ? erp.pso_nummer : ""),
+          item.auftragsnummer || (erp ? erp.auftragsnummer : ""),
+          item.artikel_typ || "",
+          item.artikel_code || "",
+          item.menge == null ? "" : String(item.menge),
+          item.bestellstatus || "",
+          item.hinweis || ""
+        ];
+      })
+    );
+
+    downloadTextFile("material-" + standort.standort_id + ".csv", buildCsv(rows), "text/csv;charset=utf-8");
+    setMessage(elements.detailActionNote, "CSV wurde im Browser erzeugt und heruntergeladen.", "success");
   }
 
   function populateForm(standortId) {
@@ -1028,6 +1134,95 @@
       return "-";
     }
     return escapeHtml(String(value));
+  }
+
+  function buildMaterialViewDocument(title, standort, rollout, material, erp) {
+    const subtitle = [standort.strasse, [standort.plz, standort.ort].filter(Boolean).join(" ")]
+      .filter(Boolean)
+      .join(", ");
+
+    const metaRows = [
+      ["PSO", erp && erp.pso_nummer ? erp.pso_nummer : "-"],
+      ["Auftrag", erp && erp.auftragsnummer ? erp.auftragsnummer : "-"],
+      ["Rollout", rollout && rollout.rollout_typ ? rollout.rollout_typ : "-"],
+      ["Datum", rollout && rollout.installationsdatum ? rollout.installationsdatum : "-"]
+    ];
+
+    return (
+      '<!DOCTYPE html><html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+      "<title>" + escapeHtml(title) + "</title>" +
+      "<style>" +
+      "body{font-family:Arial,sans-serif;background:#f7f1e7;color:#1f2a25;margin:0;padding:32px;}" +
+      ".sheet{max-width:960px;margin:0 auto;background:#fffdf8;border:1px solid #d8cdbb;border-radius:20px;padding:28px;}" +
+      ".eyebrow{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#5d665f;}" +
+      "h1{margin:8px 0 4px;font-size:42px;line-height:1;}" +
+      ".subtitle{margin:0 0 22px;color:#5d665f;font-size:18px;}" +
+      ".meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:22px;}" +
+      ".box{background:#f6f1e7;border-radius:14px;padding:12px 14px;}" +
+      ".box span{display:block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#5d665f;margin-bottom:4px;}" +
+      "table{width:100%;border-collapse:collapse;}" +
+      "th,td{padding:12px 10px;border-bottom:1px solid #e5dac8;text-align:left;}" +
+      "th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#5d665f;}" +
+      ".muted{color:#5d665f;}" +
+      "@media print{body{background:#fff;padding:0;}.sheet{border:none;border-radius:0;box-shadow:none;}}" +
+      "</style></head><body><main class=\"sheet\">" +
+      '<div class="eyebrow">ERP Materialansicht</div>' +
+      "<h1>" + escapeHtml(standort.standort_id + " " + (standort.filiale_name || "")) + "</h1>" +
+      '<p class="subtitle">' + escapeHtml(subtitle || "Keine Adressdaten") + "</p>" +
+      '<section class="meta">' +
+      metaRows
+        .map(function (row) {
+          return '<div class="box"><span>' + escapeHtml(row[0]) + "</span><strong>" + escapeHtml(row[1]) + "</strong></div>";
+        })
+        .join("") +
+      "</section>" +
+      "<table><thead><tr><th>Typ</th><th>Artikel</th><th>Menge</th><th>Status</th><th>Hinweis</th></tr></thead><tbody>" +
+      material
+        .map(function (item) {
+          return (
+            "<tr><td>" +
+            escapeHtml(item.artikel_typ || "-") +
+            "</td><td>" +
+            escapeHtml(item.artikel_code || "-") +
+            "</td><td>" +
+            escapeHtml(item.menge == null ? "-" : String(item.menge)) +
+            "</td><td>" +
+            escapeHtml(item.bestellstatus || "-") +
+            "</td><td class=\"muted\">" +
+            escapeHtml(item.hinweis || "") +
+            "</td></tr>"
+          );
+        })
+        .join("") +
+      "</tbody></table></main></body></html>"
+    );
+  }
+
+  function buildCsv(rows) {
+    return rows
+      .map(function (row) {
+        return row
+          .map(function (cell) {
+            const value = String(cell == null ? "" : cell);
+            return '"' + value.replace(/"/g, '""') + '"';
+          })
+          .join(",");
+      })
+      .join("\n");
+  }
+
+  function downloadTextFile(filename, content, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 0);
   }
 
   function indexBy(items, key) {
