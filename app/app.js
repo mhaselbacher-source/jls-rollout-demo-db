@@ -869,15 +869,21 @@
       return;
     }
 
-    const popup = window.open("", "_blank", "noopener,noreferrer");
+    const title = "ERP Material " + standort.standort_id;
+    const html = buildMaterialViewDocument(title, standort, rollout, material, erp);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const popup = window.open(url, "_blank");
+
     if (!popup) {
-      setMessage(elements.detailActionNote, "Popup konnte nicht geoeffnet werden. Bitte Popups fuer diese Seite erlauben.", "error");
+      URL.revokeObjectURL(url);
+      setMessage(elements.detailActionNote, "Neue Registerkarte konnte nicht geoeffnet werden. Bitte Popups fuer diese Seite erlauben.", "error");
       return;
     }
 
-    const title = "ERP Material " + standort.standort_id;
-    popup.document.write(buildMaterialViewDocument(title, standort, rollout, material, erp));
-    popup.document.close();
+    window.setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 60000);
   }
 
   function exportMaterialCsv() {
