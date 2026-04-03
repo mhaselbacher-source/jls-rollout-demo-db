@@ -177,7 +177,7 @@ ohne dass `config.js` manuell umgestellt werden muss.
 
 ## Supabase laden
 
-1. Das Projekt ist lokal an Supabase ref `woufcdjretcwcgqrbdgt` verlinkt
+1. Das Projekt ist lokal an Supabase ref `satuytcvrmjovxoxbmxg` verlinkt
 2. `supabase/01_schema_and_seed.sql` ist fuer dieses Projekt bereits eingespielt
 3. Die statische App kann das Projekt ueber den `anon`-Key read-only lesen
 
