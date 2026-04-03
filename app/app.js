@@ -7,7 +7,8 @@
     selectedStandortId: null,
     dataset: null,
     formMode: "create",
-    editingStandortId: null
+    editingStandortId: null,
+    cloudWriteSecret: readStoredCloudSecret()
   };
 
   const elements = {
@@ -43,7 +44,9 @@
     newEntryButton: document.getElementById("new-entry-button"),
     editSelectedButton: document.getElementById("edit-selected-button"),
     detailEditButton: document.getElementById("detail-edit-button"),
-    detailActionNote: document.getElementById("detail-action-note")
+    detailActionNote: document.getElementById("detail-action-note"),
+    cloudUnlockButton: document.getElementById("cloud-unlock-button"),
+    cloudLockButton: document.getElementById("cloud-lock-button")
   };
 
   const viewConfig = {
@@ -167,6 +170,14 @@
 
     elements.detailEditButton.addEventListener("click", function () {
       startEditSelected();
+    });
+
+    elements.cloudUnlockButton.addEventListener("click", function () {
+      unlockCloudWrite();
+    });
+
+    elements.cloudLockButton.addEventListener("click", function () {
+      lockCloudWrite();
     });
 
     elements.materialViewLink.addEventListener("click", function (event) {
@@ -542,9 +553,10 @@
     const material = getSelectedMaterial();
     const erp = getSelectedErp();
     const isLocal = state.sourceMode === "local";
+    const canWrite = isWritableMode();
     const hasMaterial = material.length > 0;
 
-    elements.detailEditButton.disabled = !standort || !isLocal;
+    elements.detailEditButton.disabled = !standort || !canWrite;
     if (standort && isLocal) {
       elements.materialViewLink.href = "/erp/material/" + encodeURIComponent(standort.standort_id);
       elements.materialViewLink.setAttribute("aria-disabled", "false");
@@ -705,19 +717,26 @@
       return;
     }
 
-    const writable = state.sourceMode === "local";
+    const writable = isWritableMode();
+    const localWrite = state.sourceMode === "local";
+    const cloudWrite = state.sourceMode === "supabase" && hasCloudWriteAccess();
     const hasSelection = Boolean(getSelectedStandort());
     const formElements = Array.from(elements.form.elements);
 
     formElements.forEach(function (field) {
       field.disabled = !writable;
     });
-    elements.importFile.disabled = !writable;
+    elements.importFile.disabled = !localWrite;
     Array.from(elements.importForm.elements).forEach(function (field) {
-      field.disabled = !writable;
+      field.disabled = !localWrite;
     });
 
-    if (writable) {
+    elements.cloudUnlockButton.hidden = state.sourceMode !== "supabase";
+    elements.cloudLockButton.hidden = state.sourceMode !== "supabase";
+    elements.cloudUnlockButton.disabled = state.sourceMode !== "supabase";
+    elements.cloudLockButton.disabled = state.sourceMode !== "supabase" || !hasCloudWriteAccess();
+
+    if (localWrite) {
       setMessage(elements.formModeNote, "Lokaler Schreibmodus aktiv. Neue Eintraege, Bearbeiten und Import schreiben in SQLite.", "success");
       setMessage(elements.importModeNote, "CSV-Dateien werden direkt in die lokale SQLite-Demo importiert.", "success");
       if (state.formMode === "edit") {
@@ -733,13 +752,33 @@
         elements.formSubmitButton.textContent = "Standort anlegen";
         elements.form.elements.standort_id.readOnly = false;
       }
+    } else if (cloudWrite) {
+      setMessage(elements.formModeNote, "Cloud-Schreibmodus entsperrt. Formularspeichern schreibt direkt in die Demo-Supabase-DB.", "success");
+      setMessage(elements.importModeNote, "CSV-Import bleibt bewusst lokal-only und ist im Webmodus deaktiviert.", "error");
+      if (state.formMode === "edit") {
+        elements.formTitle.textContent = "Eintrag in Cloud bearbeiten";
+        elements.formSubtitle.textContent =
+          "Die Bemusterungsdaten des ausgewaehlten Standorts werden in Supabase aktualisiert und Material sowie gesteuerte Tasks nachgezogen.";
+        elements.formSubmitButton.textContent = "Cloud-Aenderungen speichern";
+        elements.form.elements.standort_id.readOnly = true;
+      } else {
+        elements.formTitle.textContent = "Neue Cloud-Bemusterung erfassen";
+        elements.formSubtitle.textContent =
+          "Standort- und Rolloutdaten direkt in die Demo-Supabase-DB schreiben.";
+        elements.formSubmitButton.textContent = "In Cloud anlegen";
+        elements.form.elements.standort_id.readOnly = false;
+      }
     } else {
       elements.formTitle.textContent = "Neue Bemusterung erfassen";
       elements.formSubtitle.textContent =
         "Schreibfunktionen sind nur verfuegbar, wenn die App lokal gegen die SQLite-API laeuft.";
       elements.formSubmitButton.textContent = "Nur lokal moeglich";
       elements.form.elements.standort_id.readOnly = false;
-      setMessage(elements.formModeNote, "Diese veroeffentlichte Web-App ist read-only. Fuer Erfassen oder Bearbeiten die App lokal mit `python3 local/server.py` starten.", "error");
+      if (state.sourceMode === "supabase") {
+        setMessage(elements.formModeNote, "Web-App ist standardmaessig read-only. Fuer Cloud-Erfassung zuerst \"Cloud entsperren\" und das Demo-Secret eingeben.", "error");
+      } else {
+        setMessage(elements.formModeNote, "Diese veroeffentlichte Web-App ist read-only. Fuer Erfassen oder Bearbeiten die App lokal mit `python3 local/server.py` starten.", "error");
+      }
       setMessage(elements.importModeNote, "Import ist in der Live-Webansicht deaktiviert und nur im lokalen SQLite-Modus verfuegbar.", "error");
     }
 
@@ -775,22 +814,40 @@
   }
 
   async function submitForm() {
-    if (state.sourceMode !== "local") {
-      throw new Error("Speichern ist nur im lokalen Modus moeglich.");
-    }
-
     const wasEdit = state.formMode === "edit";
     const payload = serializeForm();
-    const endpoint =
-      state.formMode === "edit" && state.editingStandortId
-        ? "/api/standort/" + encodeURIComponent(state.editingStandortId)
-        : "/api/standort";
-    const method = state.formMode === "edit" ? "PUT" : "POST";
-    const response = await requestJson(endpoint, {
-      method: method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    let response;
+
+    if (state.sourceMode === "local") {
+      const endpoint =
+        state.formMode === "edit" && state.editingStandortId
+          ? "/api/standort/" + encodeURIComponent(state.editingStandortId)
+          : "/api/standort";
+      const method = state.formMode === "edit" ? "PUT" : "POST";
+      response = await requestJson(endpoint, {
+        method: method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+    } else if (state.sourceMode === "supabase" && hasCloudWriteAccess()) {
+      const config = window.APP_CONFIG || {};
+      response = await requestJson(getCloudWriteUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: config.supabaseAnonKey,
+          Authorization: "Bearer " + config.supabaseAnonKey,
+          "x-demo-secret": state.cloudWriteSecret
+        },
+        body: JSON.stringify({
+          action: state.formMode === "edit" ? "update" : "create",
+          standort_id: state.editingStandortId || payload.standort_id,
+          payload: payload
+        })
+      });
+    } else {
+      throw new Error("Speichern ist nur lokal oder im entsperrten Cloud-Modus moeglich.");
+    }
 
     await refreshDataset(response.standort_id);
     state.selectedStandortId = response.standort_id;
@@ -846,8 +903,8 @@
   }
 
   function startEditSelected() {
-    if (state.sourceMode !== "local") {
-      setMessage(elements.formMessage, "Bearbeiten ist nur im lokalen Modus moeglich.", "error");
+    if (!isWritableMode()) {
+      setMessage(elements.formMessage, "Bearbeiten ist nur lokal oder im entsperrten Cloud-Modus moeglich.", "error");
       return;
     }
     if (!state.selectedStandortId) {
@@ -856,6 +913,30 @@
     }
     populateForm(state.selectedStandortId);
     setMessage(elements.formMessage, "Standort in die Bearbeitungsmaske geladen.", "success");
+  }
+
+  function unlockCloudWrite() {
+    if (state.sourceMode !== "supabase") {
+      return;
+    }
+
+    const secret = window.prompt("Demo-Secret fuer Cloud-Schreibmodus eingeben:");
+    if (!secret) {
+      return;
+    }
+
+    state.cloudWriteSecret = secret.trim();
+    storeCloudSecret(state.cloudWriteSecret);
+    renderFormState();
+    setMessage(elements.formMessage, "Cloud-Schreibmodus entsperrt.", "success");
+  }
+
+  function lockCloudWrite() {
+    state.cloudWriteSecret = "";
+    storeCloudSecret("");
+    renderFormState();
+    resetForm();
+    setMessage(elements.formMessage, "Cloud-Schreibmodus wieder gesperrt.", "success");
   }
 
   function openMaterialView() {
@@ -1129,6 +1210,39 @@
   function setMessage(element, message, type) {
     element.textContent = message || "";
     element.className = "form-message" + (message && type ? " is-" + type : "");
+  }
+
+  function hasCloudWriteAccess() {
+    return state.sourceMode === "supabase" && Boolean(getCloudWriteUrl()) && Boolean(state.cloudWriteSecret);
+  }
+
+  function isWritableMode() {
+    return state.sourceMode === "local" || hasCloudWriteAccess();
+  }
+
+  function getCloudWriteUrl() {
+    const config = window.APP_CONFIG || {};
+    return String(config.cloudWriteUrl || "").trim();
+  }
+
+  function readStoredCloudSecret() {
+    try {
+      return window.sessionStorage.getItem("jlsDemoWriteSecret") || "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function storeCloudSecret(secret) {
+    try {
+      if (secret) {
+        window.sessionStorage.setItem("jlsDemoWriteSecret", secret);
+      } else {
+        window.sessionStorage.removeItem("jlsDemoWriteSecret");
+      }
+    } catch (error) {
+      console.warn("Cloud-Secret konnte nicht in sessionStorage gespeichert werden.", error);
+    }
   }
 
   function formatYesNo(value) {
