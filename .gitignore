@@ -1,0 +1,7 @@
+local/rollout_demo.db
+local/__pycache__/
+.DS_Store
+*.pyc
+*.pyo
+*.env
+*.env.*
